@@ -14,6 +14,8 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 void setup()
 {
   Serial.begin(115200);
+  delay(2000); // Give time for Serial to connect
+  Serial.println(" Booting EcobreezeMatter...");
   
   // Initialize Matter
   Matter.begin();
@@ -75,6 +77,7 @@ void loop()
   
   static uint8_t last_effective_speed = 255; // Force update on first loop
   static int manual_override = -1;
+  static uint8_t last_matter_percent = 0;
 
   if (Serial.available() > 0) {
     int val = Serial.parseInt();
@@ -93,6 +96,11 @@ void loop()
   
   bool current_state = matter_fan.get_onoff();
   uint8_t current_percent = matter_fan.get_percent();
+
+  if (current_percent != last_matter_percent) {
+    last_matter_percent = current_percent;
+    Serial.printf("Matter Percent Changed: %d%%\n", current_percent);
+  }
   
   // If manual override is active (0-100), use it.
   // Otherwise, if the fan is logically OFF, speed is 0. Else use the percentage.
@@ -125,10 +133,22 @@ void loop()
   if (current_state != fan_last_state) {
     fan_last_state = current_state;
     if (current_state) {
-      Serial.println("Fan ON");
-    } else {
-      Serial.println("Fan OFF");
+      Serial.println("Matter Fan State: ON");
     }
+    else {
+      Serial.println("Matter Fan State: OFF");
+    }
+  }
+
+  static uint32_t last_debug_print = 0;
+  if (millis() - last_debug_print > 5000) {
+    last_debug_print = millis();
+    Serial.printf("Status: On/Off=%d, Level=%d, Thread=%s, Online=%s\n", 
+      current_state, 
+      current_percent, 
+      Matter.isDeviceThreadConnected() ? "YES" : "NO", 
+      matter_fan.is_online() ? "YES" : "NO"
+    );
   }
 }
 
