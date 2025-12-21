@@ -3,9 +3,9 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 
-#define ESC_CHANNEL 4
-#define MIN_PULSE_WIDTH 1000 // 1000us
-#define MAX_PULSE_WIDTH 2000 // 2000us
+#define ESC_CHANNEL 0
+// #define MIN_PULSE_WIDTH 1000 // Removed for solid voltage test
+// #define MAX_PULSE_WIDTH 2000 // Removed for solid voltage test
 #define SERVO_FREQ 50 // Analog servos and ESCs run at ~50 Hz
 
 MatterFan matter_fan;
@@ -20,16 +20,29 @@ void setup()
   matter_fan.begin();
 
   // Initialize PWM Driver
+  Wire.begin();
+  Serial.print("Checking for PWM driver at 0x40... ");
+  Wire.beginTransmission(0x40);
+  if (Wire.endTransmission() == 0) {
+    Serial.println("Found!");
+  } else {
+    Serial.println("Not found. Check wiring.");
+  }
+
   pwm.begin();
-  pwm.setOscillatorFrequency(27000000);
+  pwm.setOscillatorFrequency(25000000);
   pwm.setPWMFreq(SERVO_FREQ);
   delay(10);
+
+  // Arming removed for solid voltage test
+  // Serial.println("Arming ESC (sending 1000us pulse)...");
+  // ...
 
   pinMode(BTN_BUILTIN, INPUT_PULLUP);
   pinMode(LEDR, OUTPUT);
   digitalWrite(LEDR, HIGH);
 
-  Serial.println("Matter fan with ESC");
+  Serial.println("Matter fan with Solid 5V Test initialized");
 
   if (!Matter.isDeviceCommissioned()) {
     Serial.println("Matter device is not commissioned");
@@ -95,26 +108,19 @@ void loop()
     
     Serial.print("Fan Speed Update: ");
     Serial.print(effective_speed);
-    Serial.println("%\n");
     
-    // Update legacy pin D4
-    int speed_analog = map(effective_speed, 0, 100, 0, 255);
-    analogWrite(fan_pin, speed_analog);
-    
-    // Update ESC on I2C PWM FeatherWing
-    // Map 0-100% to pulse width in microseconds
-    long pulse_us = map(effective_speed, 0, 100, MIN_PULSE_WIDTH, MAX_PULSE_WIDTH);
-    
-    // Convert microseconds to 12-bit counts (0-4095)
-    // counts = (pulse_us * 4096) / (1000000 / 50) 
-    //        = (pulse_us * 4096 * 50) / 1000000
-    //        = pulse_us * 0.2048
-    uint16_t pulse_counts = (uint16_t)(pulse_us * 0.2048);
-    
-    pwm.setPWM(ESC_CHANNEL, 0, pulse_counts);
+    if (effective_speed > 0) {
+        Serial.println("% -> SOLID 5V (ON)");
+        // Set fully ON (4096, 0)
+        pwm.setPWM(ESC_CHANNEL, 4096, 0); 
+    } else {
+        Serial.println("% -> SOLID 0V (OFF)");
+        // Set fully OFF (0, 4096)
+        pwm.setPWM(ESC_CHANNEL, 0, 4096);
+    }
   }
 
-  // Debug printing for state changes (optional, keeping close to original logic)
+  // Debug printing for state changes (optional)
   static bool fan_last_state = false;
   if (current_state != fan_last_state) {
     fan_last_state = current_state;
