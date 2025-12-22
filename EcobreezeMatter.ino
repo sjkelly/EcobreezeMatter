@@ -3,7 +3,7 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 
-#define ESC_CHANNEL 0
+#define ESC_CHANNEL 4
 // #define MIN_PULSE_WIDTH 1000 // Removed for solid voltage test
 // #define MAX_PULSE_WIDTH 2000 // Removed for solid voltage test
 #define SERVO_FREQ 50 // Analog servos and ESCs run at ~50 Hz
