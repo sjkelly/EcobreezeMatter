@@ -3,7 +3,14 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 
-#define ESC_CHANNEL 4
+#include <openthread/instance.h>
+#include <openthread/platform/radio.h>
+
+extern "C" {
+  extern otInstance *sInstance;
+}
+
+#define ESC_CHANNEL 0
 // #define MIN_PULSE_WIDTH 1000 // Removed for solid voltage test
 // #define MAX_PULSE_WIDTH 2000 // Removed for solid voltage test
 #define SERVO_FREQ 50 // Analog servos and ESCs run at ~50 Hz
@@ -21,19 +28,60 @@ void setup()
   Matter.begin();
   matter_fan.begin();
 
-  // Initialize PWM Driver
-  Wire.begin();
-  Serial.print("Checking for PWM driver at 0x40... ");
-  Wire.beginTransmission(0x40);
-  if (Wire.endTransmission() == 0) {
-    Serial.println("Found!");
+  if (sInstance) {
+    int8_t power = 0;
+    otError error = otPlatRadioGetTransmitPower(sInstance, &power);
+    if (error == OT_ERROR_NONE) {
+      Serial.printf("Current Thread TX Power: %d dBm\n", power);
+    } else {
+      Serial.printf("Failed to get Thread TX Power, error: %d\n", error);
+    }
+    
+    // Try to set to 20 dBm (hardware might cap it)
+    error = otPlatRadioSetTransmitPower(sInstance, 20); 
+    if (error == OT_ERROR_NONE) {
+       Serial.println("Requested Thread TX Power: 20 dBm");
+       
+       // Verify
+       otPlatRadioGetTransmitPower(sInstance, &power);
+       Serial.printf("New Thread TX Power: %d dBm\n", power);
+    } else {
+       Serial.printf("Failed to set Thread TX Power, error: %d\n", error);
+    }
   } else {
-    Serial.println("Not found. Check wiring.");
+    Serial.println("OpenThread Instance (sInstance) is NULL!");
   }
 
-  pwm.begin();
-  pwm.setOscillatorFrequency(25000000);
+  // Initialize PWM Driver
+  Wire.begin();
+  
+  Serial.println("Scanning I2C bus...");
+  int devices_found = 0;
+  for (uint8_t address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    if (Wire.endTransmission() == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.println(address, HEX);
+      devices_found++;
+    }
+  }
+  if (devices_found == 0) Serial.println("No I2C devices found\n");
+  else Serial.println("I2C scan done\n");
+
+  if (!pwm.begin()) {
+    Serial.println("PWM Driver failed to initialize! Check wiring.");
+  } else {
+    Serial.println("PWM Driver initialized successfully.");
+  }
+  
   pwm.setPWMFreq(SERVO_FREQ);
+  
+  // Read back prescale to verify communication
+  uint8_t prescale = pwm.readPrescale();
+  Serial.print("Prescale readback: 0x");
+  Serial.println(prescale, HEX);
+  
   delay(10);
 
   // Arming removed for solid voltage test
@@ -74,59 +122,8 @@ void setup()
 void loop()
 {
   decommission_handler();
-  
-  static uint8_t last_effective_speed = 255; // Force update on first loop
-  static int manual_override = -1;
-  static uint8_t last_matter_percent = 0;
-
-  if (Serial.available() > 0) {
-    int val = Serial.parseInt();
-    // consume any trailing characters like newline
-    while (Serial.available()) Serial.read();
-
-    if (val >= 0 && val <= 100) {
-      manual_override = val;
-      Serial.print("Manual Override Set: ");
-      Serial.println(manual_override);
-    } else {
-      manual_override = -1;
-      Serial.println("Manual Override Disabled (Matter Control)");
-    }
-  }
-  
   bool current_state = matter_fan.get_onoff();
   uint8_t current_percent = matter_fan.get_percent();
-
-  if (current_percent != last_matter_percent) {
-    last_matter_percent = current_percent;
-    Serial.printf("Matter Percent Changed: %d%%\n", current_percent);
-  }
-  
-  // If manual override is active (0-100), use it.
-  // Otherwise, if the fan is logically OFF, speed is 0. Else use the percentage.
-  uint8_t effective_speed;
-  if (manual_override != -1) {
-    effective_speed = (uint8_t)manual_override;
-  } else {
-    effective_speed = current_state ? current_percent : 0;
-  }
-
-  if (effective_speed != last_effective_speed) {
-    last_effective_speed = effective_speed;
-    
-    Serial.print("Fan Speed Update: ");
-    Serial.print(effective_speed);
-    
-    if (effective_speed > 0) {
-        Serial.println("% -> SOLID 5V (ON)");
-        // Set fully ON (4096, 0)
-        pwm.setPWM(ESC_CHANNEL, 4096, 0); 
-    } else {
-        Serial.println("% -> SOLID 0V (OFF)");
-        // Set fully OFF (0, 4096)
-        pwm.setPWM(ESC_CHANNEL, 0, 4096);
-    }
-  }
 
   // Debug printing for state changes (optional)
   static bool fan_last_state = false;
@@ -134,9 +131,19 @@ void loop()
     fan_last_state = current_state;
     if (current_state) {
       Serial.println("Matter Fan State: ON");
+      // Set fully ON (4096, 0)
+      pwm.setPWM(ESC_CHANNEL, 4096, 0); 
+      pwm.setPWM(0, 4096, 0); 
+      pwm.setPWM(1, 4096, 0); 
+
+
     }
     else {
       Serial.println("Matter Fan State: OFF");
+      pwm.setPWM(ESC_CHANNEL, 0, 4096);
+      pwm.setPWM(0, 0, 4096);
+      pwm.setPWM(1, 0, 4096);
+
     }
   }
 
