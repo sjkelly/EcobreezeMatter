@@ -1,7 +1,5 @@
 #include <Matter.h>
 #include <MatterFan.h>
-#include <Wire.h>
-#include <Adafruit_PWMServoDriver.h>
 
 #include <openthread/instance.h>
 #include <openthread/platform/radio.h>
@@ -10,13 +8,7 @@ extern "C" {
   extern otInstance *sInstance;
 }
 
-#define ESC_CHANNEL 0
-// #define MIN_PULSE_WIDTH 1000 // Removed for solid voltage test
-// #define MAX_PULSE_WIDTH 2000 // Removed for solid voltage test
-#define SERVO_FREQ 50 // Analog servos and ESCs run at ~50 Hz
-
 MatterFan matter_fan;
-Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
 void setup()
 {
@@ -52,36 +44,10 @@ void setup()
     Serial.println("OpenThread Instance (sInstance) is NULL!");
   }
 
-  // Initialize PWM Driver
-  Wire.begin();
-  
-  Serial.println("Scanning I2C bus...");
-  int devices_found = 0;
-  for (uint8_t address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    if (Wire.endTransmission() == 0) {
-      Serial.print("I2C device found at address 0x");
-      if (address < 16) Serial.print("0");
-      Serial.println(address, HEX);
-      devices_found++;
-    }
-  }
-  if (devices_found == 0) Serial.println("No I2C devices found\n");
-  else Serial.println("I2C scan done\n");
+  // Initialize Fan Pin
+  pinMode(D8, OUTPUT);
+  digitalWrite(D8, LOW); // Start with fan off
 
-  if (!pwm.begin()) {
-    Serial.println("PWM Driver failed to initialize! Check wiring.");
-  } else {
-    Serial.println("PWM Driver initialized successfully.");
-  }
-  
-  pwm.setPWMFreq(SERVO_FREQ);
-  
-  // Read back prescale to verify communication
-  uint8_t prescale = pwm.readPrescale();
-  Serial.print("Prescale readback: 0x");
-  Serial.println(prescale, HEX);
-  
   delay(10);
 
   // Arming removed for solid voltage test
@@ -131,19 +97,11 @@ void loop()
     fan_last_state = current_state;
     if (current_state) {
       Serial.println("Matter Fan State: ON");
-      // Set fully ON (4096, 0)
-      pwm.setPWM(ESC_CHANNEL, 4096, 0); 
-      pwm.setPWM(0, 4096, 0); 
-      pwm.setPWM(1, 4096, 0); 
-
-
+      digitalWrite(D8, HIGH);
     }
     else {
       Serial.println("Matter Fan State: OFF");
-      pwm.setPWM(ESC_CHANNEL, 0, 4096);
-      pwm.setPWM(0, 0, 4096);
-      pwm.setPWM(1, 0, 4096);
-
+      digitalWrite(D8, LOW);
     }
   }
 
