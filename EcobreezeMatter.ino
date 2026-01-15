@@ -1,6 +1,7 @@
 #include <Matter.h>
 #include <MatterFan.h>
 #include <DFRobot_GP8XXX.h>
+#include <Wire.h>
 
 #include <openthread/instance.h>
 #include <openthread/platform/radio.h>
@@ -10,7 +11,12 @@ extern "C" {
 }
 
 MatterFan matter_fan;
-DFRobot_GP8211S GP8211S;
+
+// Use the parent class DFRobot_GP8XXX_IIC directly to allow specifying &Wire1.
+// Connect Sensor to SDA -> D4, SCL -> D5
+DFRobot_GP8XXX_IIC GP8211S(RESOLUTION_15_BIT, DFGP8XXX_I2C_DEVICEADDR, &Wire1);
+
+void decommission_handler();
 
 void setup()
 {
@@ -46,14 +52,14 @@ void setup()
     Serial.println("OpenThread Instance (sInstance) is NULL!");
   }
 
-  // I2C Scanner
-  Serial.println("Scanning I2C bus...");
-  Wire.begin();
+  // I2C Scanner on Wire1 (D4/D5)
+  Serial.println("Scanning I2C bus on Wire1 (D4/D5)...");
+  Wire1.begin();
 
   int nDevices = 0;
   for (byte address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    byte error = Wire.endTransmission();
+    Wire1.beginTransmission(address);
+    byte error = Wire1.endTransmission();
     if (error == 0) {
       Serial.print("I2C device found at address 0x");
       if (address < 16) Serial.print("0");
@@ -67,31 +73,26 @@ void setup()
     }
   }
   if (nDevices == 0)
-    Serial.println("No I2C devices found\n");
+    Serial.println("No I2C devices found on Wire1\n");
   else
     Serial.println("done\n");
 
   // Initialize GP8211S DAC
-  // Note: Library calls Wire.begin() internally too, which is fine.
   if (GP8211S.begin() != 0) {
-    Serial.println("GP8211S initialization failed!");
+    Serial.println("GP8211S initialization failed! Check wiring (D4/D5).");
   } else {
-    GP8211S.setDACOutRange(GP8211S.eOutputRange10V);
+    GP8211S.setDACOutRange(DFRobot_GP8XXX::eOutputRange10V);
     GP8211S.setDACOutVoltage(0);
-    Serial.println("GP8211S initialized (0-10V range)");
+    Serial.println("GP8211S initialized (0-10V range) on Wire1");
   }
 
   delay(10);
-
-  // Arming removed for solid voltage test
-  // Serial.println("Arming ESC (sending 1000us pulse)...");
-  // ...
 
   pinMode(BTN_BUILTIN, INPUT_PULLUP);
   pinMode(LEDR, OUTPUT);
   digitalWrite(LEDR, HIGH);
 
-  Serial.println("Matter fan with Solid 5V Test initialized");
+  Serial.println("Matter fan initialized");
 
   // Check for Manual Mode entry
   Serial.println("Press any key within 5 seconds to enter MANUAL TEST MODE (skips Matter wait)...");
@@ -144,13 +145,14 @@ void loop()
   // Serial Input Handler for Manual Test
   if (Serial.available()) {
     int val = Serial.parseInt();
-    if (Serial.read() == '\n') { // consume newline
-        if (val >= 0 && val <= 100) {
-            manual_percent = val;
-            Serial.printf("MANUAL SET: %d%%\n", manual_percent);
-        } else {
-            Serial.println("Invalid input. Enter 0-100.");
-        }
+    // consume potential leftovers like newline
+    while(Serial.available()) Serial.read();
+    
+    if (val >= 0 && val <= 100) {
+        manual_percent = val;
+        Serial.printf("MANUAL SET: %d%%\n", manual_percent);
+    } else {
+        Serial.println("Invalid input. Enter 0-100.");
     }
   }
 
@@ -174,6 +176,7 @@ void loop()
 
     if (current_state) {
       Serial.printf("Fan State: ON, Speed: %d%% (Source: %s)\n", current_percent, manual_percent >= 0 ? "MANUAL" : "MATTER");
+      // 15-bit resolution for GP8211S
       uint16_t dac_value = (uint32_t)current_percent * 32767 / 100;
       GP8211S.setDACOutVoltage(dac_value);
     }
