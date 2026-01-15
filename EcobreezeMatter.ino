@@ -1,5 +1,6 @@
 #include <Matter.h>
 #include <MatterFan.h>
+#include <DFRobot_GP8XXX.h>
 
 #include <openthread/instance.h>
 #include <openthread/platform/radio.h>
@@ -9,6 +10,7 @@ extern "C" {
 }
 
 MatterFan matter_fan;
+DFRobot_GP8211S GP8211S;
 
 void setup()
 {
@@ -44,9 +46,40 @@ void setup()
     Serial.println("OpenThread Instance (sInstance) is NULL!");
   }
 
-  // Initialize Fan Pin
-  pinMode(D8, OUTPUT);
-  digitalWrite(D8, LOW); // Start with fan off
+  // I2C Scanner
+  Serial.println("Scanning I2C bus...");
+  Wire.begin();
+
+  int nDevices = 0;
+  for (byte address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.print(address, HEX);
+      Serial.println("  !");
+      nDevices++;
+    } else if (error == 4) {
+      Serial.print("Unknown error at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.println(address, HEX);
+    }
+  }
+  if (nDevices == 0)
+    Serial.println("No I2C devices found\n");
+  else
+    Serial.println("done\n");
+
+  // Initialize GP8211S DAC
+  // Note: Library calls Wire.begin() internally too, which is fine.
+  if (GP8211S.begin() != 0) {
+    Serial.println("GP8211S initialization failed!");
+  } else {
+    GP8211S.setDACOutRange(GP8211S.eOutputRange10V);
+    GP8211S.setDACOutVoltage(0);
+    Serial.println("GP8211S initialized (0-10V range)");
+  }
 
   delay(10);
 
@@ -60,59 +93,103 @@ void setup()
 
   Serial.println("Matter fan with Solid 5V Test initialized");
 
-  if (!Matter.isDeviceCommissioned()) {
-    Serial.println("Matter device is not commissioned");
-    Serial.println("Commission it to your Matter hub with the manual pairing code or QR code");
-    Serial.printf("Manual pairing code: %s\n", Matter.getManualPairingCode().c_str());
-    Serial.printf("QR code URL: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
-  }
-  while (!Matter.isDeviceCommissioned()) {
-    delay(200);
+  // Check for Manual Mode entry
+  Serial.println("Press any key within 5 seconds to enter MANUAL TEST MODE (skips Matter wait)...");
+  uint32_t wait_start = millis();
+  bool manual_mode = false;
+  while (millis() - wait_start < 5000) {
+    if (Serial.available()) {
+      while(Serial.available()) Serial.read(); // Clear buffer
+      manual_mode = true;
+      Serial.println("!!! MANUAL TEST MODE ACTIVATED !!!");
+      Serial.println("Send 0-100 to set voltage.");
+      break;
+    }
+    delay(10);
   }
 
-  Serial.println("Waiting for Thread network...");
-  while (!Matter.isDeviceThreadConnected()) {
-    delay(200);
-    decommission_handler();
-  }
-  Serial.println("Connected to Thread network");
+  if (!manual_mode) {
+    if (!Matter.isDeviceCommissioned()) {
+      Serial.println("Matter device is not commissioned");
+      Serial.println("Commission it to your Matter hub with the manual pairing code or QR code");
+      Serial.printf("Manual pairing code: %s\n", Matter.getManualPairingCode().c_str());
+      Serial.printf("QR code URL: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
+    }
+    while (!Matter.isDeviceCommissioned()) {
+      delay(200);
+    }
 
-  Serial.println("Waiting for Matter device discovery...");
-  while (!matter_fan.is_online()) {
-    delay(200);
-    decommission_handler();
+    Serial.println("Waiting for Thread network...");
+    while (!Matter.isDeviceThreadConnected()) {
+      delay(200);
+      decommission_handler();
+    }
+    Serial.println("Connected to Thread network");
+
+    Serial.println("Waiting for Matter device discovery...");
+    while (!matter_fan.is_online()) {
+      delay(200);
+      decommission_handler();
+    }
+    Serial.println("Matter device is now online");
   }
-  Serial.println("Matter device is now online");
 }
 
 void loop()
 {
   decommission_handler();
-  bool current_state = matter_fan.get_onoff();
-  uint8_t current_percent = matter_fan.get_percent();
+  
+  static int manual_percent = -1;
+  
+  // Serial Input Handler for Manual Test
+  if (Serial.available()) {
+    int val = Serial.parseInt();
+    if (Serial.read() == '\n') { // consume newline
+        if (val >= 0 && val <= 100) {
+            manual_percent = val;
+            Serial.printf("MANUAL SET: %d%%\n", manual_percent);
+        } else {
+            Serial.println("Invalid input. Enter 0-100.");
+        }
+    }
+  }
 
-  // Debug printing for state changes (optional)
+  bool current_state;
+  uint8_t current_percent;
+
+  if (manual_percent >= 0) {
+      current_state = (manual_percent > 0);
+      current_percent = (uint8_t)manual_percent;
+  } else {
+      current_state = matter_fan.get_onoff();
+      current_percent = matter_fan.get_percent();
+  }
+
   static bool fan_last_state = false;
-  if (current_state != fan_last_state) {
+  static uint8_t fan_last_percent = 0;
+
+  if (current_state != fan_last_state || current_percent != fan_last_percent) {
     fan_last_state = current_state;
+    fan_last_percent = current_percent;
+
     if (current_state) {
-      Serial.println("Matter Fan State: ON");
-      digitalWrite(D8, HIGH);
+      Serial.printf("Fan State: ON, Speed: %d%% (Source: %s)\n", current_percent, manual_percent >= 0 ? "MANUAL" : "MATTER");
+      uint16_t dac_value = (uint32_t)current_percent * 32767 / 100;
+      GP8211S.setDACOutVoltage(dac_value);
     }
     else {
-      Serial.println("Matter Fan State: OFF");
-      digitalWrite(D8, LOW);
+      Serial.printf("Fan State: OFF (Source: %s)\n", manual_percent >= 0 ? "MANUAL" : "MATTER");
+      GP8211S.setDACOutVoltage(0);
     }
   }
 
   static uint32_t last_debug_print = 0;
   if (millis() - last_debug_print > 5000) {
     last_debug_print = millis();
-    Serial.printf("Status: On/Off=%d, Level=%d, Thread=%s, Online=%s\n", 
+    Serial.printf("Status: On/Off=%d, Level=%d, Mode=%s\n", 
       current_state, 
       current_percent, 
-      Matter.isDeviceThreadConnected() ? "YES" : "NO", 
-      matter_fan.is_online() ? "YES" : "NO"
+      manual_percent >= 0 ? "MANUAL" : "MATTER"
     );
   }
 }

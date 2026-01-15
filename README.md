@@ -21,5 +21,5 @@ This module documents the specifications and control interface for the McMillan 
 ## 2. Control Interface
 The motor is controlled via a SIG and GND interface.
 - **Signal Type:** SIG + GND
-- **Activation:** Applying 5V to the SIG line activates the motor.
+- **Control Signal:** 0-10V DC analog signal for variable speed control.
 - **Drive Logic:** Integrated H-bridge power drive.
