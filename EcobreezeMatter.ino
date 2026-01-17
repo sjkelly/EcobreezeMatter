@@ -191,8 +191,12 @@ void loop()
 
     if (current_state) {
       Serial.printf("Fan Update: ON, Speed: %d%% (Source: %s)\n", current_percent, current_source.c_str());
+      // Normalize: 0% speed = 3V (30% of 10V), 100% speed = 10V (100% of 10V)
       // 15-bit resolution for GP8211S (0-32767)
-      uint16_t dac_value = (uint32_t)current_percent * 32767 / 100;
+      uint32_t dac_min = 9830; // 30% of 32767 is ~9830 (3V)
+      uint32_t dac_range = 32767 - dac_min;
+      uint16_t dac_value = dac_min + ((uint32_t)current_percent * dac_range / 100);
+      
       GP8211S.setDACOutVoltage(dac_value);
     }
     else {
