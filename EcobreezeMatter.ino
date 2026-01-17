@@ -141,7 +141,15 @@ void loop()
   decommission_handler();
   
   static int manual_percent = -1;
+  static bool last_online_state = false;
   
+  // Check for Matter online state changes
+  bool current_online_state = matter_fan.is_online();
+  if (current_online_state != last_online_state) {
+    last_online_state = current_online_state;
+    Serial.printf("Matter Fan is now %s\n", current_online_state ? "ONLINE" : "OFFLINE");
+  }
+
   // Serial Input Handler for Manual Test
   if (Serial.available()) {
     int val = Serial.parseInt();
@@ -150,9 +158,12 @@ void loop()
     
     if (val >= 0 && val <= 100) {
         manual_percent = val;
-        Serial.printf("MANUAL SET: %d%%\n", manual_percent);
+        Serial.printf("MANUAL MODE: Set to %d%%\n", manual_percent);
+    } else if (val == -1) {
+        manual_percent = -1;
+        Serial.println("MATTER MODE: Resuming Matter control");
     } else {
-        Serial.println("Invalid input. Enter 0-100.");
+        Serial.println("Invalid input. Enter 0-100 for Manual, or -1 for Matter.");
     }
   }
 
@@ -169,30 +180,35 @@ void loop()
 
   static bool fan_last_state = false;
   static uint8_t fan_last_percent = 0;
+  static String last_source = "";
 
-  if (current_state != fan_last_state || current_percent != fan_last_percent) {
+  String current_source = (manual_percent >= 0) ? "MANUAL" : "MATTER";
+
+  if (current_state != fan_last_state || current_percent != fan_last_percent || current_source != last_source) {
     fan_last_state = current_state;
     fan_last_percent = current_percent;
+    last_source = current_source;
 
     if (current_state) {
-      Serial.printf("Fan State: ON, Speed: %d%% (Source: %s)\n", current_percent, manual_percent >= 0 ? "MANUAL" : "MATTER");
-      // 15-bit resolution for GP8211S
+      Serial.printf("Fan Update: ON, Speed: %d%% (Source: %s)\n", current_percent, current_source.c_str());
+      // 15-bit resolution for GP8211S (0-32767)
       uint16_t dac_value = (uint32_t)current_percent * 32767 / 100;
       GP8211S.setDACOutVoltage(dac_value);
     }
     else {
-      Serial.printf("Fan State: OFF (Source: %s)\n", manual_percent >= 0 ? "MANUAL" : "MATTER");
+      Serial.printf("Fan Update: OFF (Source: %s)\n", current_source.c_str());
       GP8211S.setDACOutVoltage(0);
     }
   }
 
   static uint32_t last_debug_print = 0;
-  if (millis() - last_debug_print > 5000) {
+  if (millis() - last_debug_print > 10000) {
     last_debug_print = millis();
-    Serial.printf("Status: On/Off=%d, Level=%d, Mode=%s\n", 
+    Serial.printf("Status: %s | On/Off=%d | Speed=%d%% | Online=%d\n", 
+      current_source.c_str(),
       current_state, 
-      current_percent, 
-      manual_percent >= 0 ? "MANUAL" : "MATTER"
+      current_percent,
+      current_online_state
     );
   }
 }
