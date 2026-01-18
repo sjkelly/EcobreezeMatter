@@ -169,28 +169,54 @@ void loop()
 
   bool current_state;
   uint8_t current_percent;
+  DeviceFan::fan_mode_t current_mode = DeviceFan::fan_mode_t::Off;
 
   if (manual_percent >= 0) {
       current_state = (manual_percent > 0);
       current_percent = (uint8_t)manual_percent;
+      if (current_percent == 0) current_mode = DeviceFan::fan_mode_t::Off;
+      else if (current_percent <= 33) current_mode = DeviceFan::fan_mode_t::Low;
+      else if (current_percent <= 66) current_mode = DeviceFan::fan_mode_t::Med;
+      else current_mode = DeviceFan::fan_mode_t::High;
   } else {
       current_state = matter_fan.get_onoff();
       current_percent = matter_fan.get_percent();
+      current_mode = matter_fan.get_mode();
+      
+      // If mode is specific preset, we might want to prioritize it or map it
+      if (current_mode == DeviceFan::fan_mode_t::Low) current_percent = 33;
+      else if (current_mode == DeviceFan::fan_mode_t::Med) current_percent = 66;
+      else if (current_mode == DeviceFan::fan_mode_t::High) current_percent = 100;
+      else if (current_mode == DeviceFan::fan_mode_t::Off) current_percent = 0;
+
+      // Matter Level Control usually uses 0-254. If we see a value > 100, 
+      // we assume it's the raw 0-254 scale and map it to 0-100 to prevent DAC overflow.
+      if (current_percent > 100) {
+         current_percent = map(current_percent, 0, 254, 0, 100);
+      }
   }
+  
+  // Safety clamp
+  if (current_percent > 100) current_percent = 100;
 
   static bool fan_last_state = false;
   static uint8_t fan_last_percent = 0;
+  static DeviceFan::fan_mode_t fan_last_mode = DeviceFan::fan_mode_t::Off;
   static String last_source = "";
 
   String current_source = (manual_percent >= 0) ? "MANUAL" : "MATTER";
 
-  if (current_state != fan_last_state || current_percent != fan_last_percent || current_source != last_source) {
+  if (current_state != fan_last_state || current_percent != fan_last_percent || current_mode != fan_last_mode || current_source != last_source) {
     fan_last_state = current_state;
     fan_last_percent = current_percent;
+    fan_last_mode = current_mode;
     last_source = current_source;
 
+    const char* mode_names[] = {"Off", "Low", "Med", "High", "On", "Auto", "Smart"};
+    const char* mode_str = (current_mode >= 0 && current_mode <= 6) ? mode_names[current_mode] : "Unknown";
+
     if (current_state) {
-      Serial.printf("Fan Update: ON, Speed: %d%% (Source: %s)\n", current_percent, current_source.c_str());
+      Serial.printf("Fan Update: ON, Speed: %d%%, Mode: %s (Source: %s)\n", current_percent, mode_str, current_source.c_str());
       // Normalize: 0% speed = 3V (30% of 10V), 100% speed = 10V (100% of 10V)
       // 15-bit resolution for GP8211S (0-32767)
       uint32_t dac_min = 9830; // 30% of 32767 is ~9830 (3V)
@@ -200,7 +226,7 @@ void loop()
       GP8211S.setDACOutVoltage(dac_value);
     }
     else {
-      Serial.printf("Fan Update: OFF (Source: %s)\n", current_source.c_str());
+      Serial.printf("Fan Update: OFF, Mode: %s (Source: %s)\n", mode_str, current_source.c_str());
       GP8211S.setDACOutVoltage(0);
     }
   }
@@ -208,10 +234,13 @@ void loop()
   static uint32_t last_debug_print = 0;
   if (millis() - last_debug_print > 10000) {
     last_debug_print = millis();
-    Serial.printf("Status: %s | On/Off=%d | Speed=%d%% | Online=%d\n", 
+    const char* mode_names[] = {"Off", "Low", "Med", "High", "On", "Auto", "Smart"};
+    const char* mode_str = (current_mode >= 0 && current_mode <= 6) ? mode_names[current_mode] : "Unknown";
+    Serial.printf("Status: %s | On/Off=%d | Speed=%d%% | Mode=%s | Online=%d\n", 
       current_source.c_str(),
       current_state, 
       current_percent,
+      mode_str,
       current_online_state
     );
   }
