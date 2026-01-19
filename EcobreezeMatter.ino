@@ -34,8 +34,6 @@ struct FanState {
 FanState currentState;
 FanState lastHardwareState;
 
-int manual_percent = -1; // -1 indicates Matter control, 0-100 indicates Manual override
-
 // --- Helper Functions ---
 
 const char* getModeString(DeviceFan::fan_mode_t mode) {
@@ -136,74 +134,128 @@ void setup() {
     Serial.println("Device is Commissioned.");
   }
   
-  Serial.println("System Ready. Send 0-100 for Manual Control, -1 for Matter Control.");
+  Serial.println("System Ready. Send 0-100 to update Fan State.");
 }
 
 void loop() {
   decommission_handler();
 
-  // --- 1. Handle Serial Input (Manual Override) ---
+  // --- 1. Handle Serial Input (Update Matter State) ---
   if (Serial.available()) {
     int val = Serial.parseInt();
     while (Serial.available()) Serial.read(); // Flush remainder
 
     if (val >= 0 && val <= 100) {
-      manual_percent = val;
-      Serial.printf("MANUAL OVERRIDE: Set to %d%%\n", manual_percent);
-    } else if (val == -1) {
-      manual_percent = -1;
-      Serial.println("MODE SWITCH: Resuming Matter control");
+      Serial.printf("CMD: Set to %d%%\n", val);
+      if (val == 0) {
+        matter_fan.set_onoff(false);
+      } else {
+        matter_fan.set_onoff(true);
+        matter_fan.set_percent((uint8_t)val);
+        // Switch to 'On' mode to avoid 'Low'/'Med'/'High' presets overriding the custom percent
+        matter_fan.set_mode(DeviceFan::fan_mode_t::On); 
+      }
     } else {
-      Serial.println("Invalid input. Use 0-100 or -1.");
+      Serial.println("Invalid input. Use 0-100.");
     }
   }
 
   // --- 2. Determine Target State ---
   FanState targetState;
 
-  if (manual_percent >= 0) {
-    // Manual Mode
-    targetState.source = "MANUAL";
-    targetState.on = (manual_percent > 0);
-    targetState.percent = (uint8_t)manual_percent;
+  // Use static variables to track the *previous* read from Matter, 
+  // allowing us to detect WHICH attribute changed (Mode vs Percent).
+  static DeviceFan::fan_mode_t last_matter_mode = DeviceFan::fan_mode_t::Off;
+  static uint8_t last_matter_percent = 0;
+  static bool first_run = true;
+
+  // Initialize tracking on first run
+  if (first_run && Matter.isDeviceCommissioned() && matter_fan.is_online()) {
+    last_matter_mode = matter_fan.get_mode();
+    last_matter_percent = matter_fan.get_percent();
+    first_run = false;
+  }
+
+  // Always sync from Matter (Local changes above updated Matter already)
+  if (Matter.isDeviceCommissioned() && matter_fan.is_online()) {
+    targetState.source = "MATTER";
     
-    // Map percent to approx mode for display
-    if (!targetState.on) targetState.mode = DeviceFan::fan_mode_t::Off;
-    else if (targetState.percent <= 10) targetState.mode = DeviceFan::fan_mode_t::Low;
-    else if (targetState.percent <= 50) targetState.mode = DeviceFan::fan_mode_t::Med;
-    else targetState.mode = DeviceFan::fan_mode_t::High;
+    DeviceFan::fan_mode_t current_mode = matter_fan.get_mode();
+    uint8_t current_percent = matter_fan.get_percent();
+
+    // Check for changes
+    bool mode_changed = (current_mode != last_matter_mode);
+    bool percent_changed = (current_percent != last_matter_percent);
+
+    if (mode_changed) {
+      Serial.printf("EVENT: Mode changed %s -> %s\n", getModeString(last_matter_mode), getModeString(current_mode));
+      
+      // Mode takes priority. Enforce the preset speed.
+      if (current_mode == DeviceFan::fan_mode_t::Low) current_percent = 10;
+      else if (current_mode == DeviceFan::fan_mode_t::Med) current_percent = 50;
+      else if (current_mode == DeviceFan::fan_mode_t::High) current_percent = 100;
+      else if (current_mode == DeviceFan::fan_mode_t::Off) current_percent = 0;
+      
+      // Sync the percent back to Matter so the slider updates in the App
+      if (current_percent != matter_fan.get_percent()) {
+        matter_fan.set_percent(current_percent); 
+      }
+    } 
+    else if (percent_changed) {
+       Serial.printf("EVENT: Percent changed %d -> %d\n", last_matter_percent, current_percent);
+       
+       // Percent takes priority. If we are in a fixed mode but speed changed, switch to 'On'.
+       if (current_mode == DeviceFan::fan_mode_t::Low || 
+           current_mode == DeviceFan::fan_mode_t::Med || 
+           current_mode == DeviceFan::fan_mode_t::High) {
+         
+         // Only switch mode if the new percent doesn't match the current mode's definition
+         // (Allows small jitter? No, strict equality is safer for now)
+         uint8_t expected = 0;
+         if (current_mode == DeviceFan::fan_mode_t::Low) expected = 10;
+         if (current_mode == DeviceFan::fan_mode_t::Med) expected = 50;
+         if (current_mode == DeviceFan::fan_mode_t::High) expected = 100;
+
+         if (current_percent != expected) {
+            Serial.println("ACTION: Speed override detected. Switching Mode to ON.");
+            current_mode = DeviceFan::fan_mode_t::On;
+            matter_fan.set_mode(current_mode);
+         }
+       }
+       
+       // Handle 0% = Off
+       if (current_percent == 0 && current_mode != DeviceFan::fan_mode_t::Off) {
+          current_mode = DeviceFan::fan_mode_t::Off;
+          matter_fan.set_mode(current_mode);
+       }
+       // Handle >0% but Off -> Turn On
+       if (current_percent > 0 && current_mode == DeviceFan::fan_mode_t::Off) {
+          current_mode = DeviceFan::fan_mode_t::On;
+          matter_fan.set_mode(current_mode);
+       }
+    }
+    
+    // Update tracking
+    last_matter_mode = current_mode;
+    last_matter_percent = current_percent;
+
+    // Final state construction
+    targetState.mode = current_mode;
+    
+    // Sanity check raw percent for display/DAC
+    if (current_percent > 100) {
+        current_percent = map(current_percent, 0, 254, 0, 100); // just in case
+        if (current_percent > 100) current_percent = 100;
+    }
+    targetState.percent = current_percent;
+    targetState.on = (targetState.mode != DeviceFan::fan_mode_t::Off) && (targetState.percent > 0);
 
   } else {
-    // Matter Mode
-    targetState.source = "MATTER";
-    if (Matter.isDeviceCommissioned() && matter_fan.is_online()) {
-      targetState.on = matter_fan.get_onoff();
-      targetState.mode = matter_fan.get_mode();
-      
-      // Determine percent from mode or raw value
-      uint8_t raw_percent = matter_fan.get_percent();
-      
-      if (targetState.mode == DeviceFan::fan_mode_t::Low) targetState.percent = 10;
-      else if (targetState.mode == DeviceFan::fan_mode_t::Med) targetState.percent = 50;
-      else if (targetState.mode == DeviceFan::fan_mode_t::High) targetState.percent = 100;
-      else if (targetState.mode == DeviceFan::fan_mode_t::Off) targetState.percent = 0;
-      else {
-        // Use raw percent (clamped)
-        // Handle potential 0-254 scaling if value > 100
-        if (raw_percent > 100) raw_percent = map(raw_percent, 0, 254, 0, 100);
-        targetState.percent = (raw_percent > 100) ? 100 : raw_percent;
-      }
-
-      // Explicit OFF override
-      if (!targetState.on) targetState.percent = 0;
-
-    } else {
-      // Not online/commissioned
-      targetState.source = "OFFLINE";
-      targetState.on = false;
-      targetState.percent = 0;
-      targetState.mode = DeviceFan::fan_mode_t::Off;
-    }
+    // Not online/commissioned
+    targetState.source = "OFFLINE";
+    targetState.on = false;
+    targetState.percent = 0;
+    targetState.mode = DeviceFan::fan_mode_t::Off;
   }
 
   currentState = targetState;
