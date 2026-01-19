@@ -1,4 +1,4 @@
-# Ecobreeze Matter Fan Controller
+# EcobreezeMatter Fan Controller
 
 ## Hardware Details
 - **Board:** Silicon Labs Nano Matter (`SiliconLabs:silabs:nano_matter`)
@@ -19,6 +19,13 @@ The following presets are mapped to percentage values for the DAC output:
 - **Medium:** 66% (approx. 7.6V)
 - **High:** 100% (10.0V)
 - **Off:** 0% (0V)
+
+## OTA Firmware Update Status
+- **Support:** Enabled by default (Requestor Cluster is active in `nano_matter` variant).
+- **Process:** 
+  1. Build firmware to get `.hex`.
+  2. Convert to `.gbl` using Simplicity Commander.
+  3. Wrap in `.ota` using Matter SDK tools.
 
 ## Development Notes
 - Use `./bin/arduino-cli` for compilation and uploading.
